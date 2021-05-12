@@ -1,176 +1,139 @@
-//
-// Current state: early prototype
-// 
-// todo: koa maybe?
-// 
+const config = require('./vue/dist/UIconfig');
 
-//
-// Spawn a nodejs webserver
-//
+const koa = require('koa');
+const serve = require('koa-static');
+const cors = require('koa-cors');
+const _ = require('lodash');
+const bodyParser = require('koa-bodyparser');
 
-var _ = require('lodash');
-var async = require('async');
-var config = _.cloneDeep(require('../core/util').getConfig());
-// we are going to send it to web clients, remove
-// potential private information
-delete config.mailer;
-delete config.trader
+const opn = require('opn');
+const server = require('http').createServer();
+const router = require('koa-router')();
+const ws = require('ws');
+const app = koa();
 
-var serverConfig = config.webserver;
+const WebSocketServer = require('ws').Server;
+const wss = new WebSocketServer({ server: server });
 
-var ws = require("zwebsocket");
-var http = require("http");
-var fs = require('fs');
+const cache = require('./state/cache');
 
-var Server = function() {
-  _.bindAll(this);
+const nodeCommand = _.last(process.argv[1].split('/'));
+const isDevServer = nodeCommand === 'server' || nodeCommand === 'server.js';
 
-  this.history = false;
-  this.advices = false;
-  this.index;
-}
-
-Server.prototype.setup = function(next) {
-  async.series(
-    [
-      this.cacheIndex,
-      this.setupHTTP,
-      this.setupWS
-    ],
-    next
-  );
-}
-
-Server.prototype.cacheIndex = function(next) {
-  fs.readFile(__dirname + '/frontend/index.html', 'utf8', _.bind(function(err, file) {
-    if(err)
-       throw err;
-
-    // The frontend needs to know where the
-    // webserver is. Best way to pass this
-    // for now.
-    this.index = file
-      .replace('{{port}}', serverConfig.ws.port)
-      .replace('{{host}}', serverConfig.ws.host);
-
-    next();
-  }, this));
-}
-
-Server.prototype.setupHTTP = function(next) {
-  this.http = http.createServer(this.handleHTTPConnection)
-    .listen(serverConfig.http.port, next);
-}
-
-// Server.prototype.broadcastHistory = function(data) {
-//   this.history = data;
-//   this.broadcast({
-//     message: 'history',
-//     data: data
-//   });
-// }
-
-Server.prototype.broadcastCandle = function(_candle) {
-  var candle = _.clone(_candle);
-  candle.start = candle.start.unix();
-
-  if(!this.history)
-    this.history = [];
-
-  this.history.push(candle);
-
-  if(_.size(this.history) > 1000)
-    this.history.shift();
-
-  this.broadcast({
-    message: 'candle',
-    data: candle
+wss.on('connection', ws => {
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
   });
-}
-
-Server.prototype.broadcastAdvice = function(advice) {
-  if(!this.advices)
-    this.advices = [];
-
-  this.advices.push(advice);
-
-  this.broadcast({
-    message: 'advice',
-    data: advice
+  ws.ping(_.noop);
+  ws.on('error', e => {
+    console.error(new Date, '[WS] connection error:', e);
   });
-}
+});
 
-Server.prototype.broadcastTrade = function(trade) {
-  this.broadcast({
-    message: 'trade',
-    data: trade
+
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if(!ws.isAlive) {
+      console.log(new Date, '[WS] stale websocket client, terminiating..');
+      return ws.terminate();
+    }
+
+    ws.isAlive = false;
+    ws.ping(_.noop);
   });
-}
+}, 10 * 1000);
 
-Server.prototype.handleHTTPConnection = function(req, res) {
-
-  console.log(req.url);
-
-  if(req.url === '/') {
-    res.writeHead(200, {'Content-Type': 'text/html'});
-    res.end(this.index);
-  } if(_.contains(this.assets, req.url)) {
-    res.writeHead(200, {'Content-Type': 'application/javascript;'});
-    console.log('./frontend' + req.url);
-    fs.createReadStream(__dirname + '/frontend' + req.url).pipe(res)
-  } else {
-    res.writeHead(200, {'Content-Type': 'text/html'});
-    res.end('<h1>404 :(</h1>');
+// broadcast function
+const broadcast = data => {
+  if(_.isEmpty(data)) {
+    return;
   }
-}
 
-Server.prototype.setupWS = function(next) {
-  this.ws = ws.createServer(this.handleWSConnection)
-    .listen(serverConfig.ws.port, next);
-}
+  const payload = JSON.stringify(data);
 
-Server.prototype.send = function(conn, obj) {
-  conn.sendText(JSON.stringify(obj));
-}
-
-Server.prototype.broadcast = function(obj) {
-  _.each(this.ws.connections, function(conn) {
-    this.send(conn, obj);
-  }, this);
-}
-
-Server.prototype.handleWSConnection = function(conn) {
-  console.log('new con');
-  if(this.history) {
-    console.log('sending history', _.size(this.history))
-    this.send(conn, {
-      message: 'history',
-      data: this.history
+  wss.clients.forEach(ws => {
+    ws.send(payload, err => {
+      if(err) {
+        console.log(new Date, '[WS] unable to send data to client:', err);
+      }
     });
   }
+  );
+}
+cache.set('broadcast', broadcast);
 
-  if(this.advices) {
-    _.each(this.advices, function(a) {
-      this.send(conn, {
-        message: 'advice',
-        data: a
-      });
-    }, this)
+
+const ListManager = require('./state/listManager');
+const GekkoManager = require('./state/gekkoManager');
+
+// initialize lists and dump into cache
+cache.set('imports', new ListManager);
+cache.set('gekkos', new GekkoManager);
+cache.set('apiKeyManager', require('./apiKeyManager'));
+
+// setup API routes
+
+const WEBROOT = __dirname + '/';
+const ROUTE = n => WEBROOT + 'routes/' + n;
+
+// attach routes
+const apiKeys = require(ROUTE('apiKeys'));
+router.get('/api/info', require(ROUTE('info')));
+router.get('/api/strategies', require(ROUTE('strategies')));
+router.get('/api/configPart/:part', require(ROUTE('configPart')));
+router.get('/api/apiKeys', apiKeys.get);
+
+const listWraper = require(ROUTE('list'));
+router.get('/api/imports', listWraper('imports'));
+router.get('/api/gekkos', listWraper('gekkos'));
+router.get('/api/exchanges', require(ROUTE('exchanges')));
+
+router.post('/api/addApiKey', apiKeys.add);
+router.post('/api/removeApiKey', apiKeys.remove);
+router.post('/api/scan', require(ROUTE('scanDateRange')));
+router.post('/api/scansets', require(ROUTE('scanDatasets')));
+router.post('/api/backtest', require(ROUTE('backtest')));
+router.post('/api/import', require(ROUTE('import')));
+router.post('/api/startGekko', require(ROUTE('startGekko')));
+router.post('/api/stopGekko', require(ROUTE('stopGekko')));
+router.post('/api/deleteGekko', require(ROUTE('deleteGekko')));
+router.post('/api/getCandles', require(ROUTE('getCandles')));
+
+
+// incoming WS:
+// wss.on('connection', ws => {
+//   ws.on('message', _.noop);
+// });
+
+app
+  .use(cors())
+  .use(serve(WEBROOT + 'vue/dist'))
+  .use(bodyParser())
+  .use(require('koa-logger')())
+  .use(router.routes())
+  .use(router.allowedMethods());
+
+server.timeout = config.api.timeout || 120000;
+server.on('request', app.callback());
+server.listen(config.api.port, config.api.host, '::', () => {
+  const host = `${config.ui.host}:${config.ui.port}${config.ui.path}`;
+
+  if(config.ui.ssl) {
+    var location = `https://${host}`;
+  } else {
+    var location = `http://${host}`;
   }
 
-  this.send(conn, {
-    message: 'config',
-    data: config
-  });
+  console.log('Serving Gekko UI on ' + location +  '\n');
 
-  conn.on("text", function(json) {
-    // TODO: handle incoming requests
-    // from client
 
-    // var message = JSON.parse(json);
-    // console.log(json);
-  });
-  conn.on("close", function(code, reason) {});
-  conn.on("error", function(code, reason) {});
-}
-module.exports = Server;
+  // only open a browser when running `node gekko`
+  // this prevents opening the browser during development
+  if(!isDevServer && !config.headless) {
+    opn(location)
+      .catch(err => {
+        console.log('Something went wrong when trying to open your web browser. UI is running on ' + location + '.');
+    });
+  }
+});

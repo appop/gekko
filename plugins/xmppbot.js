@@ -1,7 +1,7 @@
 var log = require('../core/log');
 var moment = require('moment');
 var _ = require('lodash');
-var xmpp = require('node-xmpp');
+var xmpp = require('node-xmpp-client');
 var config = require('../core/util').getConfig();
 var xmppbot = config.xmppbot;
 var utc = moment.utc;
@@ -36,6 +36,8 @@ var Actor = function() {
   this.bot.addListener('online', this.setState);
   this.bot.addListener('stanza', this.rawStanza);
   this.bot.addListener("error", this.logError);
+  this.bot.connection.socket.setTimeout(0)
+  this.bot.connection.socket.setKeepAlive(true, 10000)
 
 }
 
@@ -75,14 +77,15 @@ Actor.prototype.sendMessage = function(message) {
 
 Actor.prototype.processCandle = function(candle) {
   this.price = candle.close;
-  this.priceTime = candle.date;
+  this.priceTime = candle.start;
 };
 
 Actor.prototype.processAdvice = function(advice) {
+  if (xmppbot.muteSoft && advice.recommendation === 'soft') return;
   this.advice = advice.recommendation;
   this.adviceTime = utc();
 
-  if(xmppbot.emitUpdats)
+  if(xmppbot.emitUpdates)
     this.newAdvice(xmppbot.receiver);
 };
 
@@ -175,8 +178,8 @@ Actor.prototype.emitRealAdvice = function(receiver) {
     'If you\'re not inside, you\'re outside!',
     'The most valuable commodity I know of is information.',
     'It\'s not a question of enough, pal. It\'s a zero sum game, somebody wins, somebody loses. Money itself isn\'t lost or made, it\'s simply transferred from one perception to another.',
-    'What’s worth doing is worth doing for money. (Wait, wasn\'t I a free and open source bot?)',
-    'When I get a hold of the son of a bitch who leaked this, I’m gonna tear his eyeballs out and I’m gonna suck his fucking skull.'
+    'What\'s worth doing is worth doing for money. (Wait, wasn\'t I a free and open source bot?)',
+    'When I get a hold of the son of a bitch who leaked this, I\'m gonna tear his eyeballs out and I\'m gonna suck his fucking skull.'
   ];
 
   this.sendMessageTo(receiver, _.first(_.shuffle(realAdvice)));

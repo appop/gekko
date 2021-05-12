@@ -5,12 +5,13 @@
 // - `trade`: after Gekko fetched new trades, this
 //   will be the most recent one.
 
-var _ = require('lodash');
-var util = require(__dirname + '/../util');
+const _ = require('lodash');
+const util = require(__dirname + '/../util');
 
-var MarketFetcher = require('./marketFetcher');
+const MarketFetcher = require('./marketFetcher');
+const dirs = util.dirs();
 
-var Manager = function(config) {
+const Manager = function(config) {
 
   _.bindAll(this);
 
@@ -31,7 +32,14 @@ Manager.prototype.retrieve = function() {
 
 
 Manager.prototype.relayTrades = function(batch) {
+  this.sendMarketStart(batch);
+  this.emit('marketUpdate', batch.last.date);
+
   this.emit('trades', batch);
 }
+
+Manager.prototype.sendMarketStart = _.once(function(batch) {
+  this.emit('marketStart', batch.first.date);
+});
 
 module.exports = Manager;

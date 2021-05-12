@@ -5,6 +5,8 @@ var fs = require('fs');
 var semver = require('semver');
 var program = require('commander');
 
+var startTime = moment();
+
 var _config = false;
 var _package = false;
 var _nodeVersion = false;
@@ -16,15 +18,17 @@ var _args = false;
 // helper functions
 var util = {
   getConfig: function() {
+    // cache
     if(_config)
       return _config;
 
-    var configFile = path.resolve(program.config || util.dirs().gekko + 'config.js');
+    if(!program.config)
+        util.die('Please specify a config file.', true);
 
-    if(!fs.existsSync(configFile))
-      util.die('Cannot find a config file.');
+    if(!fs.existsSync(util.dirs().gekko + program.config))
+      util.die('Cannot find the specified config file.', true);
 
-    _config = require(configFile);
+    _config = require(util.dirs().gekko + program.config);
     return _config;
   },
   // overwrite the whole config
@@ -60,30 +64,8 @@ var util = {
   equals: function(a, b) {
     return !(a < b || a > b)
   },
-  msToMin: function(ms) {
-    return Math.round(ms / 60 / 1000);
-  },
   minToMs: function(min) {
     return min * 60 * 1000;
-  },
-  toMicro: function(moment) {
-    return moment.format('X') * 1000 * 1000;
-  },
-  intervalsAgo: function(amount) {
-    return moment().utc().subtract('minutes', config.EMA.interval * amount);
-  },
-  minAgo: function(moment) {
-    return moment.duration( moment().utc().subtract(moment) ).asMinutes();
-  },
-  average: function(list) {
-    var total = _.reduce(list, function(m, n) { return m + n }, 0);
-    return total / list.length;
-  },
-  calculateTimespan: function(a, b) {
-    if(a < b)
-      return b.diff(a);
-    else
-      return a.diff(b);
   },
   defer: function(fn) {
     return function(args) {
@@ -96,19 +78,26 @@ var util = {
     + `\nNodejs version: ${process.version}`;
   },
   die: function(m, soft) {
+
+    if(_gekkoEnv === 'child-process') {
+      return process.send({type: 'error', error: '\n ERROR: ' + m + '\n'});
+    }
+
+    var log = console.log.bind(console);
+
     if(m) {
       if(soft) {
-        console.log('\n', m, '\n\n');
+        log('\n ERROR: ' + m + '\n\n');
       } else {
-        console.log('\n\nGekko encountered an error and can\'t continue');
-        console.log('\nError:\n');
-        console.log(m, '\n\n');
-        console.log('\nMeta debug info:\n');
-        console.log(util.logVersion());
-        console.log('');
+        log(`\nGekko encountered an error and can\'t continue`);
+        log('\nError:\n');
+        log(m, '\n\n');
+        log('\nMeta debug info:\n');
+        log(util.logVersion());
+        log('');
       }
     }
-    process.exit(0);
+    process.exit(1);
   },
   dirs: function() {
     var ROOT = __dirname + '/../';
@@ -117,11 +106,17 @@ var util = {
       gekko: ROOT,
       core: ROOT + 'core/',
       markets: ROOT + 'core/markets/',
-      exchanges: ROOT + 'exchanges/',
+      exchanges: ROOT + 'exchange/wrappers/',
       plugins: ROOT + 'plugins/',
-      methods: ROOT + 'methods/',
+      methods: ROOT + 'strategies/',
+      indicators: ROOT + 'strategies/indicators/',
       budfox: ROOT + 'core/budfox/',
-      importers: ROOT + 'importers/exchanges/'
+      importers: ROOT + 'importers/exchanges/',
+      tools: ROOT + 'core/tools/',
+      workers: ROOT + 'core/workers/',
+      web: ROOT + 'web/',
+      config: ROOT + 'config/',
+      broker: ROOT + 'exchange/'
     }
   },
   inherit: function(dest, source) {
@@ -159,7 +154,16 @@ var util = {
   },
   gekkoEnv: function() {
     return _gekkoEnv || 'standalone';
-  }
+  },
+  launchUI: function() {
+    if(program['ui'])
+      return true;
+    else
+      return false;
+  },
+  getStartTime: function() {
+    return startTime;
+  },
 }
 
 // NOTE: those options are only used
@@ -169,9 +173,8 @@ program
   .option('-c, --config <file>', 'Config file')
   .option('-b, --backtest', 'backtesting mode')
   .option('-i, --import', 'importer mode')
+  .option('--ui', 'launch a web UI')
   .parse(process.argv);
-
-var config = util.getConfig();
 
 // make sure the current node version is recent enough
 if(!util.recentNode())

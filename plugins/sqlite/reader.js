@@ -3,17 +3,22 @@ var util = require('../../core/util.js');
 var config = util.getConfig();
 var log = require(util.dirs().core + 'log');
 
-var handle = require('./handle');
+var sqlite = require('./handle');
 var sqliteUtil = require('./util');
 
 var Reader = function() {
   _.bindAll(this);
-  this.db = handle;
+  this.db = sqlite.initDB(true);
 }
 
-// returns the furtherst point (up to `from`) in time we have valid data from
-Reader.prototype.mostRecentWindow = function(to, from, next) {
-  var maxAmount = ((to - from) / 60) + 1;
+
+// returns the most recent window complete candle
+// windows within `from` and `to`
+Reader.prototype.mostRecentWindow = function(from, to, next) {
+  to = to.unix();
+  from = from.unix();
+
+  var maxAmount = to - from + 1;
 
   this.db.all(`
     SELECT start from ${sqliteUtil.table('candles')}
@@ -21,35 +26,69 @@ Reader.prototype.mostRecentWindow = function(to, from, next) {
     ORDER BY start DESC
   `, function(err, rows) {
     if(err) {
-      console.error(err);
+
+      // bail out if the table does not exist
+      if(err.message.split(':')[1] === ' no such table')
+        return next(false);
+
+      log.error(err);
       return util.die('DB error while reading mostRecentWindow');
     }
 
+    // no candles are available
     if(rows.length === 0) {
       return next(false);
     }
 
     if(rows.length === maxAmount) {
-      return next(from);
+
+      // full history is available!
+
+      return next({
+        from: from,
+        to: to
+      });
     }
 
-    // we have a gap
+    // we have at least one gap, figure out where
+    var mostRecent = _.first(rows).start;
+
     var gapIndex = _.findIndex(rows, function(r, i) {
-      return r.start !== to - i * 60;
+      return r.start !== mostRecent - i * 60;
     });
-
-    // if no candle is recent enough
-    if(gapIndex === 0) {
-      return next(false);
-    }
 
     // if there was no gap in the records, but
     // there were not enough records.
-    if(gapIndex === -1)
-      gapIndex = rows.length;
+    if(gapIndex === -1) {
+      var leastRecent = _.last(rows).start;
+      return next({
+        from: leastRecent,
+        to: mostRecent
+      });
+    }
 
-    next(to - gapIndex * 60);
+    // else return mostRecent and the
+    // the minute before the gap
+    return next({
+      from: rows[ gapIndex - 1 ].start,
+      to: mostRecent
+    });
+
   })
+}
+
+Reader.prototype.tableExists = function(name, next) {
+
+  this.db.all(`
+    SELECT name FROM sqlite_master WHERE type='table' AND name='${sqliteUtil.table(name)}';
+  `, function(err, rows) {
+    if(err) {
+      console.error(err);
+      return util.die('DB error at `get`');
+    }
+
+    next(null, rows.length === 1);
+  });
 }
 
 Reader.prototype.get = function(from, to, what, next) {
@@ -123,6 +162,7 @@ Reader.prototype.getBoundry = function(next) {
 }
 
 Reader.prototype.close = function() {
+  this.db.close();
   this.db = null;
 }
 

@@ -1,5 +1,6 @@
 var _ = require('lodash');
 var async = require('async');
+var Emitter = require('./emitter');
 
 var util = require(__dirname + '/util');
 
@@ -8,6 +9,7 @@ var log = require(util.dirs().core + 'log');
 var config = util.getConfig();
 var pluginDir = util.dirs().plugins;
 var gekkoMode = util.gekkoMode();
+var inherits = require('util').inherits;
 
 var pluginHelper = {
   // Checks whether we can load a module
@@ -64,13 +66,6 @@ var pluginHelper = {
 
     plugin.config = config[plugin.slug];
 
-    if(!plugin.config)
-      log.warn(
-        'unable to find',
-        plugin.name,
-        'in the config. Is your config up to date?'
-      );
-
     if(!plugin.config || !plugin.config.enabled)
       return next();
 
@@ -94,17 +89,23 @@ var pluginHelper = {
       return next(cannotLoad);
 
     if(plugin.path)
-      var Constructor = require(pluginDir + plugin.path(plugin.config));
+      var Constructor = require(pluginDir + plugin.path(config));
     else
       var Constructor = require(pluginDir + plugin.slug);
 
     if(plugin.async) {
+      inherits(Constructor, Emitter);
       var instance = new Constructor(util.defer(function(err) {
         next(err, instance);
       }), plugin);
+      Emitter.call(instance);
+
       instance.meta = plugin;
     } else {
+      inherits(Constructor, Emitter);
       var instance = new Constructor(plugin);
+      Emitter.call(instance);
+
       instance.meta = plugin;
       _.defer(function() {
         next(null, instance); 

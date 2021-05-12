@@ -1,67 +1,37 @@
 # Plugins
 
-A plugin is a module or plugin that can act upon events bubbling 
-through Gekko. If you want to have custom functionality so that your rocket
-flies to the moon as soon as the price hits X you should create a plugin for it.
+*This is a technical document explaining the role of Plugins in the Gekko codebase. For a non technical document about available plugins, see [here](../commandline/plugins.md).*
 
-All plugins live in `gekko/plugins`.
+Within Gekko most functionality is encapsulated into "plugins". These are simple modules that process some data (from [Gekko events](./events.md)) and do something with it. For example emitting a new event or sending a message out to some external service like telegram, or doing a live trade at an exchange.
 
-## Existing plugins:
+Whenever you run a Gekko (live trader, paper trader, backtester or importer) you are simply running a number of plugins and feeding them with market data. For a more detailed explanation, see the [architecture doc](./architecture.md).
 
-- Candle Store: save trades to disk.
-- Advice logger: log trading advice in your terminal (stdout).
-- Mailer: mail trading advice to your gmail account.
-- Pushbullet: send messages to Pushbullet devices.
-- IRC bot: logs Gekko on in an irc channel and lets users communicate with it.
-- Profit simulator: simulates trades and calculates profit over these (and logs profit).
-- Trading advisor (internal): calculates advice based on market data.
-- Redis beacon (advanced): [see below!](#redis-beacon)
+For example, there is a plugin called the paperTrader which is responsible for simulating trades (used in [backtests](../features/backtesting.md) and [paper trading](../features/paper_trading.md)). It does this by listening to advice events coming from a strategy, and simulating trades whenever they fire (and firing trade events). Find a longer list of plugins that come with Gekko [here](../commandline/plugins.md).
 
-## What kind of events can I listen to?
+- All plugins are javascript files that expose a constructor function (or ES6 class).
+- All plugins are stored in `gekko/plugins`.
+- All plugins are described in the file [`gekko/plugins.js`](https://github.com/askmike/gekko/blob/develop/plugins.js), this way Gekko knows how/when the plugin can be used (for example it does not make sense to run a telegram bot that will emit all trades in a backtest).
 
-- `candle`: Everytime Gekko calculated a new 1 minute candle from the market.
-- `advice`: Everytime the trading strategy has new advice.
+## Structure of a plugin
 
-## Implementing a new plugin
+A plugin can be a very simple module that simply listens to some event:
 
-**TODO: update**
 
-If you want to add your own plugin you need to expose a constructor function inside
-`plugins/[slugname of plugin].js`. The object needs methods based on which event you want
-to listen to:
+    // A plugin that will buy Champagne when we MOON
 
-- market feed / candle: `processCandle`.
-  This method will be fed a 1 minute candle like:
+    // example: doesn't actually work..
+    const alexa = require('alexa');
 
-      {
-        start: [moment object of the start time of the candle],
-        open: [open of candle],
-        high: [high of candle],
-        low: [low of candle],
-        close: [close of candle],
-        vwp: [average weighted price of candle],
-        volume: [total volume volume],
-        trades: [amount of trades]
+    const MOON = 1000000;
+
+    const Plugin = function() {}
+
+    Plugin.prototype.processPortfolioValueChange = function(event) {
+      if(event.value > MOON) {
+        alexa.say('Alexa, buy the best Champagne!');
       }
+    };
 
-  As well as a callback method. You are required to call this method
-  once you are done processing the candle.
+    module.exports = Plugin;
 
-- advice feed / advice `processAdvice`:
-  This method will be fed an advice like:
-
-      {
-        recommendation: [position to take, either long or short],
-        portfolio: [amount of portfolio you should move to position]
-      }
-
-You also need to add an entry for your plugin inside `plugins.js` which tells Gekko a little about
-your plugin. Finally you need to add a configuration object to `config.js` with atleast:
-
-    config.[slug name of plugin] = {
-      enabled: true
-    }
-
-Besides enabled you can also add other configurables here which users can set themselves. 
-
-That's it! Don't forget to create a pull request of the awesome plugin you've just created!
+Have a look at the [events doc](./events.md) for all events your plugin can subscribe to. For technical inspiration it's easiest to look at the code of Gekko's plugins (here [`gekko/plugins.js`](https://github.com/askmike/gekko/blob/develop/plugins.js)).
